@@ -1,5 +1,5 @@
-// Stage 4: drive Dynadot's bulk search for every domain that cleared the
-// SEMrush Authority Score threshold, then add the available ones to the cart.
+// Stage 4: run every domain that cleared the SEMrush Authority Score threshold
+// through Dynadot's bulk search, then select all and add to cart.
 //
 // Two ways in. Manually: open Dynadot yourself and click Run. Automatically:
 // the SEMrush runner flips the dynadotAuto flag and opens this page, and the
@@ -13,20 +13,27 @@
   const BULK_URL = 'https://www.dynadot.com/domain/bulk-search';
   // Bumped on every change to this file so you can tell at a glance whether
   // Chrome actually picked up a reload.
-  const PANEL_VERSION = 'v1.2';
+  const PANEL_VERSION = 'v1.3';
 
   const DEFAULTS = {
     minAS: 7,
     batchSize: 100,
     recheck: false,
-    addToCart: true,
   };
 
-  // Dynadot caps a single exact search at 1000 names.
-  const MAX_BATCH = 1000;
-  const RESULTS_TIMEOUT_MS = 60000;
-  const CART_TIMEOUT_MS = 20000;
-  const BATCH_PAUSE_MS = 3000;
+  // Dynadot caps a single exact search per account tier — 1000 regular, 2000
+  // Bulk, 5000 Super Bulk. The page prints the real figure, so read it rather
+  // than guessing; this is only the ceiling if that read fails.
+  const MAX_BATCH = 5000;
+  const FALLBACK_LIMIT = 1000;
+
+  // Generous, because a slow render that gets parsed half-finished is far more
+  // expensive than waiting. Every step also settles before the next one.
+  const SETTLE_MS = 2500;
+  const RESULTS_TIMEOUT_MS = 90000;
+  const CART_TIMEOUT_MS = 30000;
+  const BATCH_PAUSE_MS = 8000;
+  const PAGE_READY_TIMEOUT_MS = 30000;
 
   // Auto mode runs alongside the SEMrush stage, so the queue trickles in a few
   // domains at a time. Rather than search once per domain, hold results back
@@ -48,7 +55,11 @@
 
   const SEL = {
     tab: '.bulk-search-tab-item',
+    tabActive: '.tab-item-active',
     textarea: 'textarea.dyna-textarea__inner',
+    limitText: '.bulk-search-limit',
+    selectAllWrap: '.select_all_wrap',
+    selectAll: '.select_all_wrap input[type="checkbox"]',
     row: '.res-item',
     label: '.res-input-label',
     priceWrap: '.price-wrap',
@@ -56,6 +67,7 @@
     takenIcon: 'i.fa-window-minimize',
     cartRow: '.add-to-cart-row',
     cartBtn: 'button.add_to_cart, button[name="t_ad_add"]',
+    addAllBtn: 'button.all-cart-button',
     subtotal: '.add-to-cart-row-right',
   };
 
@@ -134,7 +146,7 @@
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  async function waitFor(fn, timeoutMs, interval = 300) {
+  async function waitFor(fn, timeoutMs, interval = 400) {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const v = fn();
@@ -142,6 +154,12 @@
       if (Date.now() > deadline) return null;
       await sleep(interval);
     }
+  }
+
+  // innerText is absent outside a rendering engine and empty for elements the
+  // layout has not resolved yet, so fall back to textContent.
+  function labelOf(el) {
+    return (el.innerText || el.textContent || '').trim();
   }
 
   // Vue tracks the textarea through its own value setter, so assigning .value
@@ -153,21 +171,16 @@
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
-  // innerText is absent outside a rendering engine and empty for elements the
-  // layout has not resolved yet, so fall back to textContent.
-  function labelOf(el) {
-    return (el.innerText || el.textContent || '').trim();
-  }
-
   function findButton(re) {
     return $$('button').find((b) => re.test(labelOf(b)));
   }
 
   // Exact mode is mandatory. The default "Filter by TLD" mode cross-products
-  // every name against the 10 selected TLDs, so a 50-domain queue becomes 500
-  // results and the cart fills with names nobody asked for. The two modes are
-  // only distinguishable by the textarea placeholder.
+  // every name against the selected TLDs, so a 50-domain queue becomes 500
+  // results and the cart fills with names nobody asked for.
   function isExactMode() {
+    const active = $(SEL.tabActive);
+    if (active) return /exact search/i.test(labelOf(active));
     const ta = $(SEL.textarea);
     return !!ta && /with the tld/i.test(ta.placeholder || '');
   }
@@ -177,7 +190,18 @@
     const tab = $$(SEL.tab).find((t) => /exact search/i.test(labelOf(t)));
     if (!tab) return false;
     tab.click();
-    return !!(await waitFor(isExactMode, 8000));
+    const ok = !!(await waitFor(isExactMode, 10000));
+    if (ok) await sleep(SETTLE_MS);
+    return ok;
+  }
+
+  // The page prints "Domain Limit: 3/2000" — the ceiling depends on account
+  // tier, so read it instead of hardcoding one.
+  function pageSearchLimit() {
+    const el = $(SEL.limitText);
+    const m = el && labelOf(el).replace(/,/g, '').match(/\/\s*(\d+)/);
+    const n = m ? parseInt(m[1], 10) : NaN;
+    return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_BATCH) : FALLBACK_LIMIT;
   }
 
   function rowDomain(label) {
@@ -194,19 +218,24 @@
         const domain = rowDomain(label);
         if (!DOMAIN_RE.test(domain)) return null;
         const checkbox = $('input[type="checkbox"]', label);
-        // Availability is structural: Dynadot only renders a selectable
-        // checkbox for names you can actually buy. Taken rows get a
-        // fa-window-minimize glyph in its place.
-        const taken = !!$(SEL.takenIcon, row);
+        // Dynadot renders a selectable checkbox only for names you can buy;
+        // taken rows get a fa-window-minimize glyph in its place. We do not
+        // decide anything from this — select-all does — we only record it.
+        const priceEl = $(SEL.priceWrap, row);
         return {
           domain,
           checkbox,
-          available: !!checkbox && !taken,
-          price: parsePriceUSD($(SEL.priceWrap, row)?.textContent),
-          renewal: parsePriceUSD($(SEL.renewalWrap, row)?.textContent),
+          selectable: !!checkbox && !$(SEL.takenIcon, row),
+          priceText: priceEl ? labelOf(priceEl) : '',
+          price: parsePrice(priceEl?.textContent),
+          renewal: parsePrice($(SEL.renewalWrap, row)?.textContent),
         };
       })
       .filter(Boolean);
+  }
+
+  function checkedCount() {
+    return $$(`${SEL.row} ${SEL.label} input[type="checkbox"]`).filter((c) => c.checked).length;
   }
 
   // ---------- panel ----------
@@ -243,11 +272,10 @@
     return {
       minAS: Math.max(0, Number($('#ddp-minas', panel).value) || DEFAULTS.minAS),
       batchSize: Math.min(
-        MAX_BATCH,
+        pageSearchLimit(),
         Math.max(1, Number($('#ddp-batch', panel).value) || DEFAULTS.batchSize)
       ),
       recheck: $('#ddp-recheck', panel).checked,
-      addToCart: $('#ddp-cart', panel).checked,
     };
   }
 
@@ -281,20 +309,21 @@
 
   // ---------- the run ----------
 
-  async function processBatch(batch, settings) {
+  async function processBatch(batch) {
     const names = batch.map((d) => d.domain.toLowerCase());
 
     const ta = $(SEL.textarea);
     if (!ta) throw new Error('search box not found');
     setModelValue(ta, names.join('\n'));
+    await sleep(SETTLE_MS);
 
     const searchBtn = findButton(/^search(\s+in\s+bulk)?$/i);
     if (!searchBtn) throw new Error('search button not found');
     searchBtn.click();
 
     // Exact search echoes back exactly what was submitted, so "every name in
-    // this batch has a row" is a reliable readiness signal. Require it twice
-    // running so a half-rendered list doesn't get parsed.
+    // this batch has a row" is a reliable readiness signal. Require it three
+    // polls running so a half-rendered list never gets acted on.
     let stable = 0;
     const rows = await waitFor(
       () => {
@@ -302,169 +331,185 @@
         const seen = new Set(current.map((r) => r.domain));
         if (names.every((n) => seen.has(n))) {
           stable++;
-          if (stable >= 2) return current;
+          if (stable >= 3) return current;
         } else {
           stable = 0;
         }
         return null;
       },
       RESULTS_TIMEOUT_MS,
-      400
+      500
     );
 
+    // Prices and checkboxes can land a beat after the names do.
+    await sleep(SETTLE_MS);
+
     const finalRows = rows || readRows();
+    if (!rows) log(`results incomplete after ${RESULTS_TIMEOUT_MS / 1000}s — using what rendered`, 'warn');
+
     const byDomain = new Map(finalRows.map((r) => [r.domain, r]));
     const now = Date.now();
     const updates = [];
-    const toCart = [];
-    let availableCount = 0;
-    let takenCount = 0;
-    let missingCount = 0;
+    const selectable = [];
+    let missing = 0;
 
     for (const item of batch) {
-      const key = item.domain.toLowerCase();
-      const row = byDomain.get(key);
+      const row = byDomain.get(item.domain.toLowerCase());
       if (!row) {
-        missingCount++;
+        missing++;
         updates.push({
           domain: item.domain,
           data: { dynadotStatus: 'not-returned', dynadotCheckedAt: now },
         });
-        continue;
-      }
-      if (row.available) {
-        availableCount++;
-        toCart.push(row);
+      } else if (row.selectable) {
+        selectable.push(row);
         updates.push({
           domain: item.domain,
           data: {
             dynadotStatus: 'available',
             dynadotPrice: row.price,
+            dynadotPriceText: row.priceText,
             dynadotRenewal: row.renewal,
             dynadotCheckedAt: now,
           },
         });
       } else {
-        takenCount++;
         updates.push({ domain: item.domain, data: { dynadotStatus: 'taken', dynadotCheckedAt: now } });
       }
     }
 
     await mergeResults(updates);
-    log(`${availableCount} available, ${takenCount} taken${missingCount ? `, ${missingCount} no result` : ''}`);
+    log(
+      `${selectable.length} available, ${batch.length - selectable.length - missing} taken${
+        missing ? `, ${missing} no result` : ''
+      }`
+    );
 
-    if (!toCart.length) return { availableCount, carted: 0, confirmed: true };
-    if (!settings.addToCart) {
-      log(`${toCart.length} available not carted (adding is off)`, 'warn');
-      return { availableCount, carted: 0, confirmed: true };
+    if (!selectable.length) return { availableCount: 0, carted: 0, confirmed: true };
+
+    // Select all rather than ticking names one by one: Dynadot only renders a
+    // checkbox for buyable names, so the master toggle selects exactly the
+    // available ones. Exact mode guarantees the results are only our batch.
+    const master = $(SEL.selectAll);
+    if (master) {
+      if (!master.checked) master.click();
+      await sleep(SETTLE_MS);
     }
 
-    // Only ever cart rows from this batch. Anything already ticked that we did
-    // not queue gets cleared first, so a stray manual selection can't ride
-    // along on our click.
-    const wanted = new Set(toCart.map((r) => r.domain));
-    let deselected = 0;
-    for (const row of readRows()) {
-      if (!row.checkbox) continue;
-      const shouldCheck = wanted.has(row.domain);
-      if (row.checkbox.checked && !shouldCheck) {
-        row.checkbox.click();
-        deselected++;
-      } else if (!row.checkbox.checked && shouldCheck) {
-        row.checkbox.click();
+    // Fall back to ticking rows individually if the master toggle did nothing.
+    if (checkedCount() === 0) {
+      log('select-all did not take — ticking rows individually', 'warn');
+      for (const row of readRows()) {
+        if (row.checkbox && !row.checkbox.checked) row.checkbox.click();
       }
+      await sleep(SETTLE_MS);
     }
-    if (deselected) log(`deselected ${deselected} row(s) not in this queue`, 'warn');
 
-    // The footer is rendered a tick after the last checkbox toggles, and its
-    // subtotal fills in a tick after that, so wait for the figure rather than
-    // the container.
+    const selected = checkedCount();
+    if (!selected) {
+      log('nothing got selected — skipping cart', 'err');
+      return { availableCount: selectable.length, carted: 0, confirmed: true };
+    }
+
+    // The footer renders a tick after the last checkbox toggles, and its
+    // subtotal fills in a tick after that, so wait for the figure.
     const subtotalText = await waitFor(() => {
       if (!$(SEL.cartRow)) return null;
       const el = $(SEL.subtotal);
       const t = el ? labelOf(el).replace(/\s+/g, ' ') : '';
-      return /\$/.test(t) ? t : null;
-    }, 8000);
+      return /\d/.test(t) ? t : null;
+    }, 15000);
 
     if (!$(SEL.cartRow)) {
       log('selection footer never appeared — nothing carted', 'err');
-      return { availableCount, carted: 0, confirmed: true };
+      return { availableCount: selectable.length, carted: 0, confirmed: false };
     }
 
-    const subtotal = subtotalText || '(subtotal unread)';
-    log(`adding ${toCart.length} to cart — ${subtotal}`);
+    log(`adding ${selected} to cart — ${subtotalText || '(subtotal unread)'}`);
 
-    const cartBtn = $(SEL.cartBtn);
+    const cartBtn = $(SEL.cartBtn) || $(SEL.addAllBtn);
     if (!cartBtn) {
       log('add-to-cart button not found', 'err');
-      return { availableCount, carted: 0, confirmed: true };
+      return { availableCount: selectable.length, carted: 0, confirmed: false };
     }
     cartBtn.click();
 
     const confirmed = await waitFor(
-      () =>
-        !$(SEL.cartRow) ||
-        $$(`${SEL.row} ${SEL.label} input[type="checkbox"]:checked`).length === 0,
+      () => !$(SEL.cartRow) || checkedCount() === 0,
       CART_TIMEOUT_MS
     );
+    await sleep(SETTLE_MS);
 
     const cartData = {
       dynadotInCart: true,
       dynadotCartConfirmed: !!confirmed,
       dynadotCartedAt: Date.now(),
     };
-    await mergeResults(toCart.map((r) => ({ domain: r.domain, data: cartData })));
+    await mergeResults(selectable.map((r) => ({ domain: r.domain, data: cartData })));
 
-    if (confirmed) log(`carted ${toCart.length}`, 'ok');
-    else log(`clicked add for ${toCart.length}, no confirmation — check the cart`, 'warn');
+    if (confirmed) log(`carted ${selected}`, 'ok');
+    else log(`clicked add for ${selected}, no confirmation — check the cart`, 'warn');
 
-    return { availableCount, carted: toCart.length, confirmed: !!confirmed };
+    return { availableCount: selectable.length, carted: selected, confirmed: !!confirmed };
   }
 
-  async function run() {
-    const settings = readSettingsFromPanel();
-    await saveSettings(settings);
+  // Auto mode may mount before the SPA has drawn the search form.
+  async function waitForPageReady() {
+    const ok = await waitFor(() => $(SEL.textarea), PAGE_READY_TIMEOUT_MS);
+    if (ok) await sleep(SETTLE_MS);
+    return !!ok;
+  }
 
-    if (!(await ensureExactMode())) {
-      setStatus('Could not switch to Exact Search — aborted.');
-      log('Exact Search tab not found on this page', 'err');
-      return;
-    }
-
+  async function drain(settings, onBatch) {
     const queue = await buildQueue(settings);
-    if (!queue.length) {
-      setStatus(`Nothing queued at AS ≥ ${settings.minAS}.`);
-      return;
-    }
-
+    if (!queue.length) return { done: 0 };
     const batches = [];
     for (let i = 0; i < queue.length; i += settings.batchSize) {
       batches.push(queue.slice(i, i + settings.batchSize));
     }
-
-    log(`starting: ${queue.length} domains in ${batches.length} batch(es)`);
-
+    log(`${queue.length} domains in ${batches.length} batch(es)`);
     let done = 0;
-    let available = 0;
-    let carted = 0;
-
     for (let i = 0; i < batches.length; i++) {
       if (stopRequested) break;
       setStatus(`Batch ${i + 1}/${batches.length} — searching ${batches[i].length}…`);
-      try {
-        const res = await processBatch(batches[i], settings);
-        available += res.availableCount;
-        carted += res.carted;
-      } catch (err) {
-        log(`batch ${i + 1} failed: ${err.message}`, 'err');
-      }
+      await onBatch(batches[i], i, batches.length);
       done += batches[i].length;
       await refreshQueueCount();
       if (!stopRequested && i < batches.length - 1) await sleep(BATCH_PAUSE_MS);
     }
+    return { done };
+  }
+
+  async function runManual() {
+    const settings = readSettingsFromPanel();
+    await saveSettings(settings);
+
+    if (!(await waitForPageReady())) {
+      setStatus('Search form never loaded — aborted.');
+      return;
+    }
+    if (!(await ensureExactMode())) {
+      setStatus('Could not switch to Exact Search — aborted.');
+      log('Exact Search tab not found', 'err');
+      return;
+    }
+
+    let available = 0;
+    let carted = 0;
+    const { done } = await drain(settings, async (batch) => {
+      try {
+        const res = await processBatch(batch);
+        available += res.availableCount;
+        carted += res.carted;
+      } catch (err) {
+        log(`batch failed: ${err.message}`, 'err');
+      }
+    });
 
     setStatus(
-      `${stopRequested ? 'Stopped' : 'Finished'} — ${done} checked, ${available} available, ${carted} carted.`
+      done
+        ? `${stopRequested ? 'Stopped' : 'Finished'} — ${done} checked, ${available} available, ${carted} carted.`
+        : `Nothing queued at AS ≥ ${settings.minAS}.`
     );
   }
 
@@ -489,6 +534,11 @@
     const beat = setInterval(heartbeat, HEARTBEAT_MS);
 
     try {
+      if (!(await waitForPageReady())) {
+        setStatus('Search form never loaded — auto mode stopped.');
+        log('bulk search form did not render', 'err');
+        return;
+      }
       if (!(await ensureExactMode())) {
         setStatus('Could not switch to Exact Search — auto mode stopped.');
         log('Exact Search tab not found', 'err');
@@ -516,7 +566,7 @@
             const batch = queue.slice(0, settings.batchSize);
             setStatus(`Auto — checking ${batch.length}…`);
             try {
-              const res = await processBatch(batch, settings);
+              const res = await processBatch(batch);
               if (res.carted) cartFailures = res.confirmed ? 0 : cartFailures + 1;
               batchErrors = 0;
             } catch (err) {
@@ -582,7 +632,6 @@
         <input type="number" id="ddp-batch" min="1" max="${MAX_BATCH}" step="10" />
       </label>
       <label class="ddp-check"><input type="checkbox" id="ddp-recheck" /> Re-check already checked</label>
-      <label class="ddp-check"><input type="checkbox" id="ddp-cart" /> Add available to cart</label>
       <button id="ddp-run">Run availability check</button>
       <div class="ddp-status" id="ddp-status">Idle.</div>
       <div class="ddp-log" id="ddp-log"></div>
@@ -593,7 +642,6 @@
     $('#ddp-minas', panel).value = settings.minAS;
     $('#ddp-batch', panel).value = settings.batchSize;
     $('#ddp-recheck', panel).checked = settings.recheck;
-    $('#ddp-cart', panel).checked = settings.addToCart;
 
     ['#ddp-minas', '#ddp-recheck'].forEach((sel) => {
       $(sel, panel).addEventListener('change', refreshQueueCount);
@@ -619,7 +667,7 @@
       stopRequested = false;
       btn.textContent = 'Stop';
       try {
-        await run();
+        await runManual();
       } catch (err) {
         setStatus(`Error: ${err.message}`);
         log(err.message, 'err');
@@ -653,7 +701,7 @@
     btn.textContent = bulk ? 'Run availability check' : 'Open Bulk Search';
     note.hidden = bulk;
     if (!bulk) note.textContent = 'Availability checks run on the Bulk Search page.';
-    ['#ddp-batch', '#ddp-cart', '#ddp-recheck'].forEach((sel) => {
+    ['#ddp-batch', '#ddp-recheck'].forEach((sel) => {
       const el = $(sel, panel);
       if (el) el.closest('label').style.display = bulk ? '' : 'none';
     });

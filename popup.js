@@ -58,7 +58,7 @@ function render() {
       <td>${esc(d.score ?? '-')}</td>
       <td>${esc(d.semrushAS ?? '-')}</td>
       ${dynadotCell(d)}
-      <td>${d.dynadotPrice == null ? '-' : `$${esc(d.dynadotPrice)}`}</td>
+      <td>${d.dynadotPrice == null ? '-' : `${esc(d.dynadotPriceText || d.dynadotPrice)}`}</td>
       <td>${esc(d.semrushBacklinks ?? '-')}</td>
       <td>${esc(d.bl ?? '-')}</td>
       <td>${esc(d.dp ?? '-')}</td>

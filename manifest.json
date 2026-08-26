@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ExpiredDomains Authority Sorter",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Scans ExpiredDomains.net listings, scores each domain by an authority proxy (backlinks, domain pop, Majestic rank, Wikipedia links, age), sorts high-to-low, and stores results for later browsing/export.",
   "permissions": [
     "storage",
