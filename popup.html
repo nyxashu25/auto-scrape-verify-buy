@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Authority Sorter</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="header">
+      <h1>Authority-Sorted Domains</h1>
+      <div class="actions">
+        <button id="open-runner">Lookup on SEMrush</button>
+        <button id="export-csv">Export CSV</button>
+        <button id="clear-all">Clear All</button>
+      </div>
+    </div>
+    <div class="meta" id="meta"></div>
+    <table id="results">
+      <thead>
+        <tr>
+          <th data-key="domain">Domain</th>
+          <th data-key="score">Local Score</th>
+          <th data-key="semrushAS">SEMrush AS</th>
+          <th data-key="semrushBacklinks">SR Backlinks</th>
+          <th data-key="bl">BL</th>
+          <th data-key="dp">DP</th>
+          <th data-key="mmgr">MMGR</th>
+          <th data-key="wikilinks">Wiki</th>
+          <th data-key="wby">WBY</th>
+          <th data-key="status">Status</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+    <script src="popup.js"></script>
+  </body>
+</html>

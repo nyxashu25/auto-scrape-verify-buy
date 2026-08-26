@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>SEMrush Authority Lookup</title>
+    <link rel="stylesheet" href="runner.css" />
+  </head>
+  <body>
+    <h1>SEMrush Authority Lookup</h1>
+    <p class="hint">
+      Keep this tab open while it runs. It drives a second tab through SEMrush's Domain Overview
+      for each stored domain and records the Authority Score. Leave it visible so you can spot a
+      login wall or captcha if SEMrush throws one.
+    </p>
+    <div class="controls">
+      <label>Delay between lookups (seconds)
+        <input type="number" id="delay" min="3" value="6" step="1" />
+      </label>
+      <label class="checkbox"><input type="checkbox" id="recheck" /> Re-check domains already looked up</label>
+      <div class="buttons">
+        <button id="start">Start</button>
+        <button id="stop" disabled>Stop</button>
+      </div>
+    </div>
+    <div class="status" id="status">Not started.</div>
+    <div class="progress" id="progress"></div>
+    <table id="log">
+      <thead>
+        <tr>
+          <th>Domain</th>
+          <th>Authority Score</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="log-body"></tbody>
+    </table>
+    <script src="runner.js"></script>
+  </body>
+</html>

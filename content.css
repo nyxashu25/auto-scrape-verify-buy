@@ -1,0 +1,49 @@
+#auth-collector-panel {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 999999;
+  background: #1f2430;
+  color: #eee;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-family: Arial, sans-serif;
+  font-size: 12px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+  width: 190px;
+}
+
+#auth-collector-panel .acp-header {
+  font-weight: bold;
+  margin-bottom: 4px;
+}
+
+#auth-collector-panel .acp-count {
+  margin-bottom: 6px;
+  opacity: 0.8;
+}
+
+#auth-collector-panel button {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 6px;
+  border: none;
+  border-radius: 4px;
+  background: #3a7bd5;
+  color: white;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+#auth-collector-panel button:hover {
+  background: #2f66b3;
+}
+
+#auth-collector-panel .acp-status {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.85;
+  max-height: 60px;
+  overflow-y: auto;
+}
