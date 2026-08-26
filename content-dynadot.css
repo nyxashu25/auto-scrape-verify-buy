@@ -18,9 +18,21 @@
   margin-bottom: 4px;
 }
 
+#dynadot-cart-panel .ddp-ver {
+  font-weight: normal;
+  opacity: 0.5;
+  font-size: 10px;
+}
+
 #dynadot-cart-panel .ddp-queue {
   margin-bottom: 8px;
   opacity: 0.85;
+}
+
+#dynadot-cart-panel .ddp-note {
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: #f0c674;
 }
 
 #dynadot-cart-panel .ddp-field {

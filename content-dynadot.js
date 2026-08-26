@@ -8,6 +8,10 @@
   const STORAGE_KEY = 'authorityDomains';
   const SETTINGS_KEY = 'dynadotSettings';
   const BULK_PATH = '/domain/bulk-search';
+  const BULK_URL = 'https://www.dynadot.com/domain/bulk-search';
+  // Bumped on every change to this file so you can tell at a glance whether
+  // Chrome actually picked up a reload.
+  const PANEL_VERSION = 'v1.1';
 
   const DEFAULTS = {
     minAS: 7,
@@ -191,12 +195,30 @@
     };
   }
 
+  // An empty queue has several very different causes, and "0 domains" alone
+  // gives you no way to tell them apart.
   async function refreshQueueCount() {
     const settings = readSettingsFromPanel();
+    const { [STORAGE_KEY]: stored = [] } = await chrome.storage.local.get(STORAGE_KEY);
     const queue = await buildQueue(settings);
     const el = $('#ddp-queue', panel);
-    if (el) {
+    if (!el) return queue;
+
+    if (queue.length) {
       el.textContent = `${queue.length} domain${queue.length === 1 ? '' : 's'} at AS ≥ ${settings.minAS}`;
+    } else if (!stored.length) {
+      el.textContent = '0 queued — no domains stored yet.';
+    } else {
+      const scored = stored.filter((d) => typeof d.semrushAS === 'number');
+      if (!scored.length) {
+        el.textContent = `0 queued — ${stored.length} stored, none looked up on SEMrush yet.`;
+      } else {
+        const maxAS = Math.max(...scored.map((d) => d.semrushAS));
+        const eligible = scored.filter((d) => d.semrushAS >= settings.minAS).length;
+        el.textContent = eligible
+          ? `0 queued — all ${eligible} at AS ≥ ${settings.minAS} already checked (tick re-check).`
+          : `0 queued — ${scored.length} scored, highest AS is ${maxAS} (need ≥ ${settings.minAS}).`;
+      }
     }
     return queue;
   }
@@ -396,8 +418,9 @@
     panel = document.createElement('div');
     panel.id = 'dynadot-cart-panel';
     panel.innerHTML = `
-      <div class="ddp-header">Dynadot Auto-Cart</div>
+      <div class="ddp-header">Dynadot Auto-Cart <span class="ddp-ver">${PANEL_VERSION}</span></div>
       <div class="ddp-queue" id="ddp-queue">…</div>
+      <div class="ddp-note" id="ddp-note" hidden></div>
       <label class="ddp-field">Min SEMrush AS
         <input type="number" id="ddp-minas" min="0" max="100" step="1" />
       </label>
@@ -424,6 +447,15 @@
 
     $('#ddp-run', panel).addEventListener('click', async (e) => {
       const btn = e.currentTarget;
+
+      // Away from the bulk-search page there is nothing to drive, so the
+      // button just takes you there. Navigating on your click keeps the
+      // extension from ever opening Dynadot on its own.
+      if (!onBulkPage()) {
+        location.href = BULK_URL;
+        return;
+      }
+
       if (running) {
         stopRequested = true;
         setStatus('Stopping after this batch…');
@@ -444,18 +476,34 @@
       refreshQueueCount();
     });
 
+    updateModeUI();
     refreshQueueCount();
   }
 
-  function unmount() {
+  function onBulkPage() {
+    return location.pathname.startsWith(BULK_PATH);
+  }
+
+  // The panel shows up on every Dynadot page so it is never silently absent;
+  // only its action changes.
+  function updateModeUI() {
     if (!panel || running) return;
-    panel.remove();
-    panel = null;
+    const bulk = onBulkPage();
+    const note = $('#ddp-note', panel);
+    const btn = $('#ddp-run', panel);
+    btn.textContent = bulk ? 'Run availability check' : 'Open Bulk Search';
+    note.hidden = bulk;
+    if (!bulk) note.textContent = 'Availability checks run on the Bulk Search page.';
+    ['#ddp-batch', '#ddp-cart', '#ddp-recheck'].forEach((sel) => {
+      const el = $(sel, panel);
+      if (el) el.closest('label').style.display = bulk ? '' : 'none';
+    });
+    $('#ddp-log', panel).style.display = bulk ? '' : 'none';
+    $('#ddp-status', panel).style.display = bulk ? '' : 'none';
   }
 
   function syncToPath() {
-    if (location.pathname.startsWith(BULK_PATH)) mount();
-    else unmount();
+    mount().then(updateModeUI);
   }
 
   syncToPath();

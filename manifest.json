@@ -1,13 +1,17 @@
 {
   "manifest_version": 3,
   "name": "ExpiredDomains Authority Sorter",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Scans ExpiredDomains.net listings, scores each domain by an authority proxy (backlinks, domain pop, Majestic rank, Wikipedia links, age), sorts high-to-low, and stores results for later browsing/export.",
-  "permissions": ["storage", "tabs"],
+  "permissions": [
+    "storage",
+    "tabs"
+  ],
   "host_permissions": [
     "https://member.expireddomains.net/*",
     "https://www.semrush.com/*",
-    "https://www.dynadot.com/*"
+    "https://www.dynadot.com/*",
+    "https://dynadot.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -18,20 +22,40 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://member.expireddomains.net/*"],
-      "js": ["utils.js", "content.js"],
-      "css": ["content.css"],
+      "matches": [
+        "https://member.expireddomains.net/*"
+      ],
+      "js": [
+        "utils.js",
+        "content.js"
+      ],
+      "css": [
+        "content.css"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.semrush.com/analytics/overview/*"],
-      "js": ["utils.js", "content-semrush.js"],
+      "matches": [
+        "https://www.semrush.com/analytics/overview/*"
+      ],
+      "js": [
+        "utils.js",
+        "content-semrush.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.dynadot.com/*"],
-      "js": ["utils.js", "content-dynadot.js"],
-      "css": ["content-dynadot.css"],
+      "matches": [
+        "https://www.dynadot.com/*",
+        "https://dynadot.com/*"
+      ],
+      "js": [
+        "utils.js",
+        "content-dynadot.js"
+      ],
+      "css": [
+        "content-dynadot.css"
+      ],
       "run_at": "document_idle"
     }
   ]
