@@ -36,7 +36,19 @@ Organic/Paid Traffic and Keywords.
   need to see it. The runner detects a logged-out state and stops on its own.
 
 ### 3. Check availability and cart on Dynadot
-Log in to Dynadot yourself and open
+
+**Automatic (default).** Log in to Dynadot first, then just start the SEMrush
+runner with **Auto-cart qualifying domains on Dynadot** ticked. The first
+domain to reach the threshold opens a Dynadot window, which then checks
+availability and carts what it finds *while the SEMrush lookup is still
+running*. No clicks.
+
+It stops on its own when SEMrush finishes and the queue is empty. It also stops
+after two batches whose cart click never confirms — the usual sign of a
+logged-out session — rather than burning the whole queue. Only one Dynadot tab
+can drive it at a time; a second one stands down instead of double-carting.
+
+**Manual.** Log in to Dynadot yourself and open
 [Bulk Search](https://www.dynadot.com/domain/bulk-search). A **Dynadot
 Auto-Cart** panel appears bottom-right. The extension never opens or navigates
 this tab for you.

@@ -12,11 +12,18 @@
       for each stored domain and records the Authority Score. Leave it visible so you can spot a
       login wall or captcha if SEMrush throws one.
     </p>
+    <p class="hint">
+      With auto-carting on, the first domain to reach your Dynadot threshold opens a Dynadot
+      window that checks availability and adds what it finds to the cart, running alongside this
+      lookup. <strong>Log in to Dynadot first</strong> — a logged-out session cannot cart, and the
+      run stops itself after two batches fail to confirm. Nothing is ever purchased.
+    </p>
     <div class="controls">
       <label>Delay between lookups (seconds)
         <input type="number" id="delay" min="3" value="6" step="1" />
       </label>
       <label class="checkbox"><input type="checkbox" id="recheck" /> Re-check domains already looked up</label>
+      <label class="checkbox"><input type="checkbox" id="auto-dynadot" checked /> Auto-cart qualifying domains on Dynadot</label>
       <div class="buttons">
         <button id="start">Start</button>
         <button id="stop" disabled>Stop</button>

@@ -1,10 +1,16 @@
 const STORAGE_KEY = 'authorityDomains';
+const SETTINGS_KEY = 'dynadotSettings';
+const AUTO_KEY = 'dynadotAuto';
+const DYNADOT_BULK_URL = 'https://www.dynadot.com/domain/bulk-search';
+
 let running = false;
 let stopRequested = false;
 let workerTabId = null;
+let dynadotWindowId = null;
 
 const delayInput = document.getElementById('delay');
 const recheckInput = document.getElementById('recheck');
+const autoDynadotInput = document.getElementById('auto-dynadot');
 const startBtn = document.getElementById('start');
 const stopBtn = document.getElementById('stop');
 const statusEl = document.getElementById('status');
@@ -66,8 +72,35 @@ async function ensureWorkerTab() {
   return workerTabId;
 }
 
+async function setAutoFlag(patch) {
+  const { [AUTO_KEY]: cur = {} } = await chrome.storage.local.get(AUTO_KEY);
+  await chrome.storage.local.set({ [AUTO_KEY]: { ...cur, ...patch } });
+}
+
+// Opened once per run, and only after a domain actually qualifies — no window
+// appears if nothing clears the threshold. Its own window rather than a tab
+// here, so it does not disturb the SEMrush worker tab.
+async function openDynadotWindow() {
+  if (dynadotWindowId !== null) return;
+  try {
+    const win = await chrome.windows.create({ url: DYNADOT_BULK_URL, focused: true });
+    dynadotWindowId = win.id;
+    logRow('—', null, 'opened Dynadot for auto-carting');
+    chrome.windows.onRemoved.addListener(function handler(id) {
+      if (id !== dynadotWindowId) return;
+      dynadotWindowId = null;
+      chrome.windows.onRemoved.removeListener(handler);
+    });
+  } catch (err) {
+    logRow('—', null, `could not open Dynadot: ${err.message}`);
+  }
+}
+
 async function run() {
   const { [STORAGE_KEY]: stored = [] } = await chrome.storage.local.get(STORAGE_KEY);
+  const { [SETTINGS_KEY]: dynadotSettings = {} } = await chrome.storage.local.get(SETTINGS_KEY);
+  const autoDynadot = autoDynadotInput.checked;
+  const minAS = typeof dynadotSettings.minAS === 'number' ? dynadotSettings.minAS : 7;
   const recheck = recheckInput.checked;
   const queue = stored.filter((d) => recheck || d.semrushCheckedAt == null);
 
@@ -80,6 +113,11 @@ async function run() {
   }
 
   const delayMs = Math.max(3, Number(delayInput.value) || 6) * 1000;
+
+  // Set before the first lookup so a Dynadot tab you already have open picks
+  // up auto mode immediately rather than waiting for the window we may open.
+  await setAutoFlag({ enabled: autoDynadot, semrushRunning: true, startedAt: Date.now() });
+
   await ensureWorkerTab();
 
   let done = 0;
@@ -114,6 +152,11 @@ async function run() {
       logRow(item.domain, 'n/a', 'no data');
     } else {
       logRow(item.domain, result.semrushAS, 'done');
+      // First domain to clear the bar opens Dynadot; the panel there starts
+      // itself and keeps draining while this loop carries on.
+      if (autoDynadot && typeof result.semrushAS === 'number' && result.semrushAS >= minAS) {
+        await openDynadotWindow();
+      }
     }
 
     progressEl.textContent = `${done}/${queue.length}`;
@@ -124,6 +167,9 @@ async function run() {
   }
 
   const wasStopped = stopRequested;
+  // Tells the Dynadot panel no more domains are coming, so it can flush what
+  // is left and stop instead of polling forever.
+  await setAutoFlag({ semrushRunning: false });
   running = false;
   stopRequested = false;
   startBtn.disabled = false;
@@ -145,3 +191,7 @@ stopBtn.addEventListener('click', () => {
   stopRequested = true;
   statusEl.textContent = 'Stopping after current lookup...';
 });
+
+// A runner tab closed mid-run leaves semrushRunning set, which would keep a
+// Dynadot panel polling for domains that are never coming.
+setAutoFlag({ semrushRunning: false });

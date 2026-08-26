@@ -1,17 +1,19 @@
 // Stage 4: drive Dynadot's bulk search for every domain that cleared the
 // SEMrush Authority Score threshold, then add the available ones to the cart.
 //
-// This script never opens or navigates anything on its own. It mounts a panel
-// on Dynadot's bulk-search page and waits for an explicit click, so you stay
-// logged in and in control of the tab.
+// Two ways in. Manually: open Dynadot yourself and click Run. Automatically:
+// the SEMrush runner flips the dynadotAuto flag and opens this page, and the
+// panel drains the queue on its own while SEMrush keeps feeding it.
 (function () {
   const STORAGE_KEY = 'authorityDomains';
   const SETTINGS_KEY = 'dynadotSettings';
+  const AUTO_KEY = 'dynadotAuto';
+  const OWNER_KEY = 'dynadotAutoOwner';
   const BULK_PATH = '/domain/bulk-search';
   const BULK_URL = 'https://www.dynadot.com/domain/bulk-search';
   // Bumped on every change to this file so you can tell at a glance whether
   // Chrome actually picked up a reload.
-  const PANEL_VERSION = 'v1.1';
+  const PANEL_VERSION = 'v1.2';
 
   const DEFAULTS = {
     minAS: 7,
@@ -25,6 +27,24 @@
   const RESULTS_TIMEOUT_MS = 60000;
   const CART_TIMEOUT_MS = 20000;
   const BATCH_PAUSE_MS = 3000;
+
+  // Auto mode runs alongside the SEMrush stage, so the queue trickles in a few
+  // domains at a time. Rather than search once per domain, hold results back
+  // until enough accumulate — or until the trickle stalls, or SEMrush finishes.
+  const AUTO_POLL_MS = 5000;
+  const AUTO_MIN_BATCH = 25;
+  const AUTO_MAX_WAIT_MS = 60000;
+
+  // Only one tab may drive auto mode. Two tabs both carting would double up on
+  // real purchases, so ownership is claimed with a heartbeat.
+  const TAB_ID = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  const HEARTBEAT_MS = 8000;
+  const OWNER_STALE_MS = 25000;
+
+  // Two batches in a row where the cart click never confirms almost always
+  // means the session is logged out. Stop rather than burn the whole queue.
+  const MAX_CART_FAILURES = 2;
+  const MAX_BATCH_ERRORS = 3;
 
   const SEL = {
     tab: '.bulk-search-tab-item',
@@ -77,6 +97,36 @@
     return chrome.storage.local.set({ [SETTINGS_KEY]: s });
   }
 
+  async function loadAuto() {
+    const { [AUTO_KEY]: a = {} } = await chrome.storage.local.get(AUTO_KEY);
+    return { enabled: false, semrushRunning: false, ...a };
+  }
+
+  async function patchAuto(patch) {
+    const cur = await loadAuto();
+    await chrome.storage.local.set({ [AUTO_KEY]: { ...cur, ...patch } });
+  }
+
+  // Best-effort mutex. chrome.storage has no compare-and-swap, so we write then
+  // read back: if another tab wrote in between, it wins and we stand down.
+  async function claimAuto() {
+    const { [OWNER_KEY]: owner } = await chrome.storage.local.get(OWNER_KEY);
+    if (owner && owner.id !== TAB_ID && Date.now() - owner.at < OWNER_STALE_MS) return false;
+    await chrome.storage.local.set({ [OWNER_KEY]: { id: TAB_ID, at: Date.now() } });
+    await sleep(120);
+    const { [OWNER_KEY]: check } = await chrome.storage.local.get(OWNER_KEY);
+    return !!check && check.id === TAB_ID;
+  }
+
+  function heartbeat() {
+    return chrome.storage.local.set({ [OWNER_KEY]: { id: TAB_ID, at: Date.now() } });
+  }
+
+  async function releaseAuto() {
+    const { [OWNER_KEY]: owner } = await chrome.storage.local.get(OWNER_KEY);
+    if (owner && owner.id === TAB_ID) await chrome.storage.local.remove(OWNER_KEY);
+  }
+
   // ---------- page helpers ----------
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -103,8 +153,14 @@
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
+  // innerText is absent outside a rendering engine and empty for elements the
+  // layout has not resolved yet, so fall back to textContent.
+  function labelOf(el) {
+    return (el.innerText || el.textContent || '').trim();
+  }
+
   function findButton(re) {
-    return $$('button').find((b) => re.test((b.innerText || '').trim()));
+    return $$('button').find((b) => re.test(labelOf(b)));
   }
 
   // Exact mode is mandatory. The default "Filter by TLD" mode cross-products
@@ -118,7 +174,7 @@
 
   async function ensureExactMode() {
     if (isExactMode()) return true;
-    const tab = $$(SEL.tab).find((t) => /exact search/i.test(t.innerText || ''));
+    const tab = $$(SEL.tab).find((t) => /exact search/i.test(labelOf(t)));
     if (!tab) return false;
     tab.click();
     return !!(await waitFor(isExactMode, 8000));
@@ -297,10 +353,10 @@
     await mergeResults(updates);
     log(`${availableCount} available, ${takenCount} taken${missingCount ? `, ${missingCount} no result` : ''}`);
 
-    if (!toCart.length) return { availableCount, carted: 0 };
+    if (!toCart.length) return { availableCount, carted: 0, confirmed: true };
     if (!settings.addToCart) {
       log(`${toCart.length} available not carted (adding is off)`, 'warn');
-      return { availableCount, carted: 0 };
+      return { availableCount, carted: 0, confirmed: true };
     }
 
     // Only ever cart rows from this batch. Anything already ticked that we did
@@ -325,13 +381,14 @@
     // the container.
     const subtotalText = await waitFor(() => {
       if (!$(SEL.cartRow)) return null;
-      const t = ($(SEL.subtotal)?.innerText || '').replace(/\s+/g, ' ').trim();
+      const el = $(SEL.subtotal);
+      const t = el ? labelOf(el).replace(/\s+/g, ' ') : '';
       return /\$/.test(t) ? t : null;
     }, 8000);
 
     if (!$(SEL.cartRow)) {
       log('selection footer never appeared — nothing carted', 'err');
-      return { availableCount, carted: 0 };
+      return { availableCount, carted: 0, confirmed: true };
     }
 
     const subtotal = subtotalText || '(subtotal unread)';
@@ -340,7 +397,7 @@
     const cartBtn = $(SEL.cartBtn);
     if (!cartBtn) {
       log('add-to-cart button not found', 'err');
-      return { availableCount, carted: 0 };
+      return { availableCount, carted: 0, confirmed: true };
     }
     cartBtn.click();
 
@@ -361,7 +418,7 @@
     if (confirmed) log(`carted ${toCart.length}`, 'ok');
     else log(`clicked add for ${toCart.length}, no confirmation — check the cart`, 'warn');
 
-    return { availableCount, carted: toCart.length };
+    return { availableCount, carted: toCart.length, confirmed: !!confirmed };
   }
 
   async function run() {
@@ -409,6 +466,103 @@
     setStatus(
       `${stopRequested ? 'Stopped' : 'Finished'} — ${done} checked, ${available} available, ${carted} carted.`
     );
+  }
+
+  // ---------- auto mode ----------
+
+  // Drains the queue continuously while the SEMrush stage feeds it, then stops
+  // once SEMrush is done and nothing is left. No clicks required.
+  async function runAuto() {
+    if (running) return;
+    if (!(await claimAuto())) {
+      log('another Dynadot tab is already auto-running', 'warn');
+      setStatus('Idle — another tab owns auto mode.');
+      return;
+    }
+
+    running = true;
+    stopRequested = false;
+    const btn = $('#ddp-run', panel);
+    if (btn) btn.textContent = 'Stop';
+    log('auto mode on — carting as SEMrush finds them', 'ok');
+
+    const beat = setInterval(heartbeat, HEARTBEAT_MS);
+
+    try {
+      if (!(await ensureExactMode())) {
+        setStatus('Could not switch to Exact Search — auto mode stopped.');
+        log('Exact Search tab not found', 'err');
+        return;
+      }
+
+      let idleSince = Date.now();
+      let cartFailures = 0;
+      let batchErrors = 0;
+
+      while (!stopRequested) {
+        const settings = readSettingsFromPanel();
+        const auto = await loadAuto();
+        const queue = await refreshQueueCount();
+
+        if (queue.length) {
+          // Wait for a worthwhile batch, but never stall: go early if the feed
+          // has gone quiet or the SEMrush stage has finished.
+          const ready =
+            queue.length >= AUTO_MIN_BATCH ||
+            !auto.semrushRunning ||
+            Date.now() - idleSince > AUTO_MAX_WAIT_MS;
+
+          if (ready) {
+            const batch = queue.slice(0, settings.batchSize);
+            setStatus(`Auto — checking ${batch.length}…`);
+            try {
+              const res = await processBatch(batch, settings);
+              if (res.carted) cartFailures = res.confirmed ? 0 : cartFailures + 1;
+              batchErrors = 0;
+            } catch (err) {
+              // A throw leaves the batch unmarked, so it requeues. Without a
+              // ceiling a broken page would retry the same names forever.
+              batchErrors++;
+              log(`batch failed: ${err.message}`, 'err');
+              if (batchErrors >= MAX_BATCH_ERRORS) {
+                setStatus(`Stopped — ${batchErrors} batches failed in a row (${err.message}).`);
+                log('giving up; the page markup may have changed', 'err');
+                break;
+              }
+            }
+            idleSince = Date.now();
+
+            if (cartFailures >= MAX_CART_FAILURES) {
+              setStatus('Stopped — cart is not confirming. Check you are logged in to Dynadot.');
+              log(`${cartFailures} batches carted without confirmation — stopping`, 'err');
+              break;
+            }
+            await sleep(BATCH_PAUSE_MS);
+            continue;
+          }
+        } else if (!auto.semrushRunning) {
+          setStatus('Auto — finished, queue empty.');
+          log('queue drained and SEMrush is done', 'ok');
+          break;
+        }
+
+        setStatus(
+          auto.semrushRunning
+            ? `Auto — ${queue.length} pending, waiting for SEMrush…`
+            : 'Auto — wrapping up…'
+        );
+        await sleep(AUTO_POLL_MS);
+      }
+    } finally {
+      clearInterval(beat);
+      await releaseAuto();
+      await patchAuto({ enabled: false });
+      running = false;
+      stopRequested = false;
+      if (btn) btn.textContent = 'Run availability check';
+      updateModeUI();
+      refreshQueueCount();
+    }
   }
 
   // ---------- mount ----------
@@ -477,7 +631,12 @@
     });
 
     updateModeUI();
-    refreshQueueCount();
+    await refreshQueueCount();
+
+    // The runner flips this on when SEMrush produces its first qualifying
+    // domain, then opens this page. Start without waiting for a click.
+    const auto = await loadAuto();
+    if (auto.enabled && onBulkPage()) runAuto();
   }
 
   function onBulkPage() {
@@ -505,6 +664,17 @@
   function syncToPath() {
     mount().then(updateModeUI);
   }
+
+  // Covers the case where a Dynadot tab was already open before the SEMrush
+  // run started — it picks up auto mode without needing to be reloaded.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes[AUTO_KEY]?.newValue?.enabled && !running && panel && onBulkPage()) {
+      runAuto();
+    }
+    // Keep the queue line live while the SEMrush stage writes new scores.
+    if (changes[STORAGE_KEY] && panel && !running) refreshQueueCount();
+  });
 
   syncToPath();
   // Dynadot routes client-side, so a content script that only ran on the
