@@ -6,7 +6,8 @@
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://member.expireddomains.net/*",
-    "https://www.semrush.com/*"
+    "https://www.semrush.com/*",
+    "https://www.dynadot.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -25,6 +26,12 @@
     {
       "matches": ["https://www.semrush.com/analytics/overview/*"],
       "js": ["utils.js", "content-semrush.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.dynadot.com/*"],
+      "js": ["utils.js", "content-dynadot.js"],
+      "css": ["content-dynadot.css"],
       "run_at": "document_idle"
     }
   ]

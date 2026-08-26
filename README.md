@@ -35,7 +35,30 @@ Organic/Paid Traffic and Keywords.
 - Keep the worker tab visible — if SEMrush shows a login wall or captcha you
   need to see it. The runner detects a logged-out state and stops on its own.
 
-### 3. Read / export
+### 3. Check availability and cart on Dynadot
+Log in to Dynadot yourself and open
+[Bulk Search](https://www.dynadot.com/domain/bulk-search). A **Dynadot
+Auto-Cart** panel appears bottom-right. The extension never opens or navigates
+this tab for you.
+
+- **Min SEMrush AS** — default `7`. Only domains whose scraped Authority Score
+  is at or above this go in the queue. Domains never looked up on SEMrush are
+  never queued.
+- **Batch size** — default 100. Dynadot's exact search caps at 1000 per query.
+- **Add available to cart** — on by default. Turn it off to check availability
+  without touching the cart.
+
+Press **Run availability check**. Per batch it fills the search box, searches,
+records every result, then ticks only the available domains from that batch and
+clicks **Add to cart**. The subtotal is logged in the panel before the click.
+
+The panel forces Dynadot's **Exact Search** mode. The default "Filter by TLD"
+mode multiplies every name against the 10 selected TLDs — 50 domains would
+become 500 results and cart names you never asked for.
+
+Nothing is ever purchased. The run stops at the cart; checkout stays manual.
+
+### 4. Read / export
 Click the extension icon. Table is sorted by **SEMrush AS** by default; click any
 column header to re-sort. Domains not yet looked up always sort to the bottom
 rather than counting as zero.
@@ -62,6 +85,7 @@ absent from SEMrush's index entirely and will show `n/a`.
 | `utils.js` | Shared number parsing + local score formula |
 | `content.js` / `content.css` | ExpiredDomains scraper + floating panel |
 | `content-semrush.js` | SEMrush Domain Overview scraper |
+| `content-dynadot.js` / `content-dynadot.css` | Dynadot bulk-search availability + cart panel |
 | `runner.html/.css/.js` | Batch lookup driver |
 | `popup.html/.css/.js` | Sorted table, CSV export |
 | `background.js` | Badge count |

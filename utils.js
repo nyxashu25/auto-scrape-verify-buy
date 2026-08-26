@@ -42,6 +42,17 @@ function parseAbbreviatedNumber(text) {
   return Math.round(parseFloat(m[1]) * mult);
 }
 
+// Dynadot prints prices as "$10.88" and renewals as "Renewal $10.88". Returns
+// null for anything without a figure ("Taken", empty cell) so a missing price
+// never reads as free.
+function parsePriceUSD(text) {
+  if (!text) return null;
+  const m = String(text).replace(/,/g, '').match(/\$\s*([\d.]+)/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
 if (typeof module !== 'undefined') {
-  module.exports = { parseNum, computeAuthorityScore, parseAbbreviatedNumber };
+  module.exports = { parseNum, computeAuthorityScore, parseAbbreviatedNumber, parsePriceUSD };
 }

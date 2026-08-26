@@ -76,6 +76,19 @@ tbody tr:nth-child(even) {
   background: #fafbfd;
 }
 
+td.dd-available {
+  color: #1a7f37;
+  font-weight: bold;
+}
+
+td.dd-taken {
+  color: #999;
+}
+
+td.dd-not-returned {
+  color: #b26a00;
+}
+
 tbody a {
   color: #2f66b3;
   text-decoration: none;
