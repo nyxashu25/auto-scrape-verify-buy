@@ -22,6 +22,19 @@ A **Authority Collector** panel appears bottom-right.
 
 Domains are deduplicated by name. Re-scanning never erases SEMrush results.
 
+### 1b. Or import a CSV
+Already have a list? Open the runner (extension icon → **Import CSV**) and drop
+a file on the import panel, or pick one.
+
+- One domain per row, or a `domain` column anywhere in the file
+- URLs are trimmed to the registrable domain (`https://www.Foo.com/x` → `foo.com`)
+- Quoted fields, tabs, and duplicate rows are all handled
+- A CSV exported from this extension imports straight back in
+
+Importing **never overwrites** SEMrush or Dynadot results you already have. If a
+row carries a `semrushAS` value it is treated as already looked up, so the
+SEMrush stage skips it — handy for re-importing an export.
+
 ### 2. Look up Authority Score
 Click the extension icon → **Lookup on SEMrush**. This opens a runner tab.
 

@@ -88,6 +88,12 @@ document.getElementById('open-runner').addEventListener('click', () => {
   chrome.tabs.create({ url: chrome.runtime.getURL('runner.html') });
 });
 
+// Import lives on the runner page: opening a file picker from an extension
+// popup closes the popup on Windows, which would abort the import.
+document.getElementById('import-csv').addEventListener('click', () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL('runner.html') });
+});
+
 document.getElementById('export-csv').addEventListener('click', () => {
   const header = [
     'domain',

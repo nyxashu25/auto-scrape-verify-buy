@@ -72,6 +72,215 @@ async function ensureWorkerTab() {
   return workerTabId;
 }
 
+// ---------- CSV import ----------
+
+const DOMAIN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$/i;
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+
+// Columns the exporter writes, so an exported CSV round-trips back in.
+const NUMERIC_FIELDS = [
+  'score', 'semrushAS', 'semrushBacklinks', 'semrushRefDomains', 'semrushOrganicTraffic',
+  'semrushPaidTraffic', 'semrushOrganicKeywords', 'semrushPaidKeywords',
+  'bl', 'dp', 'mmgr', 'wikilinks', 'acr',
+];
+const TEXT_FIELDS = ['status', 'sourceList', 'addDate', 'wby', 'aby', 'dynadotStatus'];
+
+// Handles quoted fields and embedded commas/newlines, matching what our own
+// Export CSV writes.
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  const delim = text.indexOf('\t') !== -1 && text.indexOf(',') === -1 ? '\t' : ',';
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c !== '"') field += c;
+      else if (text[i + 1] === '"') { field += '"'; i++; }
+      else quoted = false;
+    } else if (c === '"') {
+      quoted = true;
+    } else if (c === delim) {
+      row.push(field);
+      field = '';
+    } else if (c === '\n') {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+    } else if (c !== '\r') {
+      field += c;
+    }
+  }
+  if (field !== '' || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows.filter((r) => r.some((cell) => cell.trim() !== ''));
+}
+
+// Accepts bare domains and full URLs; everything that is not a registrable
+// name comes back null so it can be counted as skipped rather than stored.
+function normalizeDomain(raw) {
+  let s = String(raw ?? '').trim().toLowerCase();
+  if (!s) return null;
+  s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//, '');
+  s = s.split(/[/?#]/)[0];
+  s = s.split('@').pop();
+  s = s.split(':')[0];
+  s = s.replace(/^www\./, '').replace(/\.+$/, '');
+  return DOMAIN_RE.test(s) ? s : null;
+}
+
+function toNumber(v) {
+  if (v == null || String(v).trim() === '') return undefined;
+  const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function buildRecords(rows) {
+  const first = rows[0].map((h) => h.trim());
+  const lower = first.map((h) => h.toLowerCase());
+  // A header row is one whose cells are labels rather than domains.
+  const hasHeader = lower.some((h) => h === 'domain') || first.every((c) => normalizeDomain(c) === null);
+
+  let domainIdx = 0;
+  let colMap = {};
+  if (hasHeader) {
+    domainIdx = lower.indexOf('domain');
+    if (domainIdx === -1) domainIdx = lower.findIndex((h) => h.includes('domain'));
+    if (domainIdx === -1) domainIdx = 0;
+    lower.forEach((h, i) => {
+      const key = [...NUMERIC_FIELDS, ...TEXT_FIELDS].find((f) => f.toLowerCase() === h);
+      if (key && i !== domainIdx) colMap[i] = key;
+    });
+  } else {
+    domainIdx = first.findIndex((c) => normalizeDomain(c) !== null);
+    if (domainIdx === -1) domainIdx = 0;
+  }
+
+  const body = hasHeader ? rows.slice(1) : rows;
+  const seen = new Set();
+  const records = [];
+  let skipped = 0;
+  let duplicates = 0;
+
+  for (const row of body) {
+    const domain = normalizeDomain(row[domainIdx]);
+    if (!domain) { skipped++; continue; }
+    if (seen.has(domain)) { duplicates++; continue; }
+    seen.add(domain);
+
+    const rec = { domain };
+    for (const [idx, key] of Object.entries(colMap)) {
+      const raw = row[idx];
+      if (raw == null || String(raw).trim() === '') continue;
+      if (NUMERIC_FIELDS.includes(key)) {
+        const n = toNumber(raw);
+        if (n !== undefined) rec[key] = n;
+      } else {
+        rec[key] = String(raw).trim();
+      }
+    }
+    records.push(rec);
+  }
+  return { records, skipped, duplicates, hasHeader, scored: records.filter((r) => typeof r.semrushAS === 'number').length };
+}
+
+async function importRecords(records) {
+  const { [STORAGE_KEY]: existing = [] } = await chrome.storage.local.get(STORAGE_KEY);
+  const byDomain = new Map(existing.map((d) => [d.domain.toLowerCase(), d]));
+  const now = Date.now();
+  let added = 0;
+  let merged = 0;
+
+  for (const rec of records) {
+    const prev = byDomain.get(rec.domain);
+    if (prev) merged++;
+    else added++;
+    // prev first: an import must never wipe SEMrush or Dynadot results.
+    const next = { score: 0, ...prev, ...rec, firstSeen: prev?.firstSeen || now, lastSeen: now };
+    // An imported Authority Score counts as already looked up, so the runner
+    // does not spend a SEMrush request re-fetching it.
+    if (typeof rec.semrushAS === 'number' && next.semrushCheckedAt == null) {
+      next.semrushCheckedAt = now;
+      next.semrushStatus = 'imported';
+    }
+    byDomain.set(rec.domain, next);
+  }
+
+  await chrome.storage.local.set({ [STORAGE_KEY]: [...byDomain.values()] });
+  return { added, merged, total: byDomain.size };
+}
+
+function setImportStatus(msg, kind) {
+  const el = document.getElementById('import-status');
+  el.textContent = msg;
+  el.className = `import-status${kind ? ` is-${kind}` : ''}`;
+}
+
+async function handleFile(file) {
+  if (!file) return;
+  if (file.size > MAX_IMPORT_BYTES) {
+    setImportStatus(`${file.name} is too large (max 10 MB).`, 'err');
+    return;
+  }
+  setImportStatus(`Reading ${file.name}…`);
+  let text;
+  try {
+    text = await file.text();
+  } catch (err) {
+    setImportStatus(`Could not read file: ${err.message}`, 'err');
+    return;
+  }
+
+  const rows = parseCSV(text);
+  if (!rows.length) {
+    setImportStatus('That file has no rows.', 'err');
+    return;
+  }
+
+  const { records, skipped, duplicates, scored } = buildRecords(rows);
+  if (!records.length) {
+    setImportStatus('No valid domains found — check the file has a domain column.', 'err');
+    return;
+  }
+
+  const { added, merged, total } = await importRecords(records);
+  const bits = [`${added} new`];
+  if (merged) bits.push(`${merged} already stored`);
+  if (scored) bits.push(`${scored} with an Authority Score (SEMrush will skip these)`);
+  if (duplicates) bits.push(`${duplicates} duplicate row${duplicates === 1 ? '' : 's'}`);
+  if (skipped) bits.push(`${skipped} not a domain`);
+  setImportStatus(`Imported ${records.length} from ${file.name} — ${bits.join(', ')}. ${total} stored in total.`, 'ok');
+}
+
+const importZone = document.getElementById('import-zone');
+const importFile = document.getElementById('import-file');
+
+document.getElementById('import-pick').addEventListener('click', () => importFile.click());
+importFile.addEventListener('change', (e) => {
+  handleFile(e.target.files[0]);
+  e.target.value = '';
+});
+
+['dragenter', 'dragover'].forEach((evt) =>
+  importZone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    importZone.classList.add('is-over');
+  })
+);
+['dragleave', 'drop'].forEach((evt) =>
+  importZone.addEventListener(evt, (e) => {
+    e.preventDefault();
+    if (evt === 'dragleave' && importZone.contains(e.relatedTarget)) return;
+    importZone.classList.remove('is-over');
+  })
+);
+importZone.addEventListener('drop', (e) => handleFile(e.dataTransfer?.files?.[0]));
+
 async function setAutoFlag(patch) {
   const { [AUTO_KEY]: cur = {} } = await chrome.storage.local.get(AUTO_KEY);
   await chrome.storage.local.set({ [AUTO_KEY]: { ...cur, ...patch } });

@@ -18,6 +18,19 @@
       lookup. <strong>Log in to Dynadot first</strong> — a logged-out session cannot cart, and the
       run stops itself after two batches fail to confirm. Nothing is ever purchased.
     </p>
+    <div class="import" id="import-zone">
+      <div class="import-head">Import domains from CSV</div>
+      <p class="import-hint">
+        Drop a CSV here, or pick a file. One domain per row, or a
+        <code>domain</code> column. URLs are trimmed down to the domain. Importing never
+        overwrites SEMrush or Dynadot results you already have.
+      </p>
+      <div class="import-actions">
+        <button id="import-pick" type="button">Choose CSV…</button>
+        <span class="import-status" id="import-status"></span>
+      </div>
+      <input type="file" id="import-file" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden />
+    </div>
     <div class="controls">
       <label>Delay between lookups (seconds)
         <input type="number" id="delay" min="3" value="6" step="1" />
